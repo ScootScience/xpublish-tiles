@@ -177,10 +177,12 @@ class WMSGetFeatureInfoQuery(WMSBaseQuery):
     )
     x: int = Field(
         ...,
+        validation_alias=AliasChoices("x", "i"),
         description="The x coordinate of the point to query. This is the index of the point in the x dimension",
     )
     y: int = Field(
         ...,
+        validation_alias=AliasChoices("y", "j"),
         description="The y coordinate of the point to query. This is the index of the point in the y dimension",
     )
 
@@ -374,6 +376,10 @@ WMS_FILTERED_QUERY_PARAMS = {
     "range",
     "x",
     "y",
+    "i",
+    "j",
+    "format",
+    "info_format",
 }
 
 

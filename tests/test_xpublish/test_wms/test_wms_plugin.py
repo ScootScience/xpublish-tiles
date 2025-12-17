@@ -1,3 +1,4 @@
+import json
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -198,3 +199,36 @@ def test_app_router(xpublish_client):
     # Test invalid request (no parameters)
     response = xpublish_client.get("/datasets/air/wms")
     assert response.status_code == 422
+
+
+def test_get_feature_info(xpublish_client):
+    """Test GetFeatureInfo request returns point values."""
+    response = xpublish_client.get(
+        "/datasets/air/wms",
+        params={
+            "service": "WMS",
+            "version": "1.3.0",
+            "request": "GetFeatureInfo",
+            "query_layers": "air",
+            "crs": "EPSG:4326",
+            "bbox": "-180,-90,180,90",
+            "width": 256,
+            "height": 256,
+            "i": 128,
+            "j": 128,
+            "time": "2013-01-01T00:00:00",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+
+    data = json.loads(response.content)
+    assert "type" in data
+    assert data["type"] == "FeatureCollection"
+    assert "features" in data
+    assert len(data["features"]) > 0
+
+    feature = data["features"][0]
+    assert "properties" in feature
+    assert "value" in feature["properties"]
+    assert isinstance(feature["properties"]["value"], (int, float))

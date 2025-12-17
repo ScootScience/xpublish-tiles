@@ -1,10 +1,12 @@
 """OGC Web Map Service XPublish Plugin"""
 
+import json
 from enum import Enum
 from io import BytesIO
 from typing import Annotated
 
 import cf_xarray  # noqa: F401
+import numpy as np
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
 from PIL import Image
@@ -59,9 +61,7 @@ class WMSPlugin(Plugin):
                 case WMSGetMapQuery():
                     return await handle_get_map(request, wms_query.root, dataset)
                 case WMSGetFeatureInfoQuery():
-                    raise NotImplementedError(
-                        "GetFeatureInfo is not yet implemented. Coming Soon!"
-                    )
+                    return await handle_get_feature_info(request, wms_query.root, dataset)
                 case WMSGetLegendGraphicQuery():
                     return await handle_get_legend_graphic(wms_query.root)
 
@@ -184,6 +184,146 @@ async def handle_get_map(
     buffer = await pipeline(dataset, render_params)
 
     return Response(buffer.getbuffer(), media_type="image/png")
+
+
+async def handle_get_feature_info(
+    request: Request, query: WMSGetFeatureInfoQuery, dataset: xr.Dataset
+) -> Response:
+    """Handle WMS GetFeatureInfo request."""
+    from xpublish_tiles.grids import guess_grid_system
+    from xpublish_tiles.lib import transformer_from_crs
+
+    selectors = {}
+    for param_name, param_value in request.query_params.items():
+        if param_name not in WMS_FILTERED_QUERY_PARAMS:
+            if param_name in dataset.dims:
+                selectors[param_name] = param_value
+
+    if query.time or query.elevation:
+        cf_axes = dataset.cf.axes
+        if query.time:
+            time_name = cf_axes.get("T", None)
+            if len(time_name):
+                selectors[time_name[0]] = query.time
+        if query.elevation:
+            vertical_name = cf_axes.get("Z", None)
+            if vertical_name:
+                selectors[vertical_name[0]] = query.elevation
+
+    x_pixel = query.x
+    y_pixel = query.y
+
+    pixel_width = (query.bbox.east - query.bbox.west) / query.width
+    pixel_height = (query.bbox.north - query.bbox.south) / query.height
+
+    x_coord = query.bbox.west + (x_pixel + 0.5) * pixel_width
+    y_coord = query.bbox.north - (y_pixel + 0.5) * pixel_height
+
+    try:
+        var_name = query.query_layers
+        if var_name not in dataset.data_vars:
+            return Response(
+                content=f'{{"error": "Variable {var_name} not found in dataset"}}',
+                media_type="application/json",
+                status_code=404,
+            )
+
+        da = dataset[var_name]
+
+        if selectors:
+            da = da.sel(selectors, method="nearest")
+
+        grid = guess_grid_system(dataset, var_name)
+        output_to_input = transformer_from_crs(crs_from=query.crs, crs_to=grid.crs)
+
+        native_x, native_y = output_to_input.transform(x_coord, y_coord)
+
+        cf_axes = da.cf.axes
+        x_dim = cf_axes.get("X", [None])[0]
+        y_dim = cf_axes.get("Y", [None])[0]
+
+        x_coords = da[x_dim].values if x_dim else None
+        y_coords = da[y_dim].values if y_dim else None
+
+        debug_info = {
+            "x_pixel": x_pixel,
+            "y_pixel": y_pixel,
+            "x_coord": x_coord,
+            "y_coord": y_coord,
+            "native_x": native_x,
+            "native_y": native_y,
+            "x_dim": x_dim,
+            "y_dim": y_dim,
+            "grid_crs": str(grid.crs),
+            "request_crs": str(query.crs),
+            "x_coords_shape": str(x_coords.shape) if x_coords is not None else None,
+            "y_coords_shape": str(y_coords.shape) if y_coords is not None else None,
+            "grid_type": type(grid).__name__,
+        }
+
+        if x_dim and y_dim:
+            selection_method = "unknown"
+            selected_indices = {}
+            try:
+                point_value = da.sel({x_dim: native_x, y_dim: native_y}, method="nearest")
+                selection_method = "sel_nearest"
+            except (KeyError, ValueError) as e:
+                x_coords = da[x_dim].values
+                y_coords = da[y_dim].values
+
+                if x_coords.ndim == 2 and y_coords.ndim == 2:
+                    distances = (x_coords - native_x)**2 + (y_coords - native_y)**2
+                    min_idx = distances.argmin()
+                    idx_2d = divmod(min_idx, distances.shape[1])
+                    selected_indices = {da.dims[0]: int(idx_2d[0]), da.dims[1]: int(idx_2d[1])}
+                    point_value = da.isel(selected_indices)
+                    selection_method = "curvilinear_2d"
+                else:
+                    x_idx = int(np.abs(x_coords - native_x).argmin())
+                    y_idx = int(np.abs(y_coords - native_y).argmin())
+                    selected_indices = {x_dim: x_idx, y_dim: y_idx}
+                    point_value = da.isel(selected_indices)
+                    selection_method = "1d_coords"
+
+            value = float(point_value.values)
+            debug_info["selection_method"] = selection_method
+            debug_info["selected_indices"] = selected_indices
+
+            geojson = {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "geometry": {
+                            "type": "Point",
+                            "coordinates": [x_coord, y_coord],
+                        },
+                        "properties": {
+                            var_name: value,
+                            "value": value,
+                            "debug": debug_info,
+                        },
+                    }
+                ],
+            }
+
+            return Response(
+                content=json.dumps(geojson),
+                media_type="application/json",
+            )
+        else:
+            return Response(
+                content='{"error": "Could not determine spatial dimensions"}',
+                media_type="application/json",
+                status_code=400,
+            )
+
+    except Exception as e:
+        return Response(
+            content=f'{{"error": "{str(e)}"}}',
+            media_type="application/json",
+            status_code=500,
+        )
 
 
 async def handle_get_legend_graphic(query: WMSGetLegendGraphicQuery) -> Response:
