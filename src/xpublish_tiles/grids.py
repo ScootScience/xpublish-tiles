@@ -96,6 +96,33 @@ Y_COORD_PATTERN = re.compile(
 _GRID_CACHE = cachetools.LRUCache(maxsize=config["grid_cache_max_size"])
 
 
+def _normalize_longitude_to_range(lon: float, reference: float) -> float:
+    """Normalize longitude to be within ±180° of a reference longitude.
+
+    This handles wraparound for longitude comparisons. For example:
+    - _normalize_longitude_to_range(170, -170) returns -190 (170 - 360)
+    - _normalize_longitude_to_range(-170, 170) returns 190 (-170 + 360)
+
+    Parameters
+    ----------
+    lon : float
+        Longitude value to normalize
+    reference : float
+        Reference longitude
+
+    Returns
+    -------
+    float
+        Normalized longitude within ±180° of reference
+    """
+    diff = lon - reference
+    if diff > 180:
+        return lon - 360
+    elif diff < -180:
+        return lon + 360
+    return lon
+
+
 def _grab_edges(
     left: np.ndarray,
     right: np.ndarray,
@@ -104,22 +131,33 @@ def _grab_edges(
     axis: int,
     size: int,
     increasing: bool,
+    handle_longitude_wrap: bool = False,
 ) -> list:
     # bottom edge is inclusive; similar to IntervalIndex used in Rectilinear grids
     assert slicer.start <= slicer.stop
+
+    # For longitude with wraparound, normalize edges relative to bbox start
+    if handle_longitude_wrap:
+        # Normalize all edges to be within ±180° of slicer.start
+        left_norm = np.vectorize(lambda x: _normalize_longitude_to_range(x, slicer.start))(left)
+        right_norm = np.vectorize(lambda x: _normalize_longitude_to_range(x, slicer.start))(right)
+    else:
+        left_norm = left
+        right_norm = right
+
     if increasing:
         ys = [
-            np.append(np.nonzero(left <= slicer.stop)[axis], 0).max(),
-            np.append(np.nonzero(right > slicer.stop)[axis], size).min(),
-            np.append(np.nonzero(left <= slicer.start)[axis], 0).max(),
-            np.append(np.nonzero(right > slicer.start)[axis], size).min(),
+            np.append(np.nonzero(left_norm <= slicer.stop)[axis], 0).max(),
+            np.append(np.nonzero(right_norm > slicer.stop)[axis], size).min(),
+            np.append(np.nonzero(left_norm <= slicer.start)[axis], 0).max(),
+            np.append(np.nonzero(right_norm > slicer.start)[axis], size).min(),
         ]
     else:
         ys = [
-            np.append(np.nonzero(left < slicer.stop)[axis], size).min(),
-            np.append(np.nonzero(right >= slicer.stop)[axis], 0).max(),
-            np.append(np.nonzero(left < slicer.start)[axis], size).min(),
-            np.append(np.nonzero(right >= slicer.start)[axis], 0).max(),
+            np.append(np.nonzero(left_norm < slicer.stop)[axis], size).min(),
+            np.append(np.nonzero(right_norm >= slicer.stop)[axis], 0).max(),
+            np.append(np.nonzero(left_norm < slicer.start)[axis], size).min(),
+            np.append(np.nonzero(right_norm >= slicer.start)[axis], 0).max(),
         ]
     return ys
 
@@ -384,6 +422,7 @@ class CellTreeIndex(xr.Index):
 
 class CurvilinearCellIndex(xr.Index):
     uses_0_360: bool
+    has_longitude_wraparound: bool
     Xdim: str
     Ydim: str
     X: xr.DataArray
@@ -411,7 +450,19 @@ class CurvilinearCellIndex(xr.Index):
         X, Y = self.X.data, self.Y.data
         xaxis = self.X.get_axis_num(self.Xdim)
         yaxis = self.Y.get_axis_num(self.Ydim)
-        dX, dY = _padded_diff(X, axis=xaxis), _padded_diff(Y, axis=yaxis)
+
+        # Check for longitude wraparound (e.g., discontinuity from 180 to -180)
+        test_diff = np.diff(X, axis=xaxis)
+        self.has_longitude_wraparound = np.any(np.abs(test_diff) > 180)
+
+        # For longitude coordinates with wraparound, unwrap before computing cell spacing
+        if self.has_longitude_wraparound:
+            X_unwrapped = np.unwrap(X * np.pi / 180, axis=xaxis) * 180 / np.pi
+            dX = _padded_diff(X_unwrapped, axis=xaxis)
+        else:
+            dX = _padded_diff(X, axis=xaxis)
+
+        dY = _padded_diff(Y, axis=yaxis)
         self.left, self.right = X - dX / 2, X + dX / 2
         self.bottom, self.top = Y - dY / 2, Y + dY / 2
         self.y_is_increasing = True
@@ -465,7 +516,13 @@ class CurvilinearCellIndex(xr.Index):
         all_indexers: list[slice] = []
         for sl in slices:
             xs = _grab_edges(
-                left, right, slicer=sl, axis=xaxis, size=Xlen, increasing=True
+                left,
+                right,
+                slicer=sl,
+                axis=xaxis,
+                size=Xlen,
+                increasing=True,
+                handle_longitude_wrap=self.has_longitude_wraparound,
             )
             # add 1 to account for slice upper end being exclusive
             indexer = slice(min(xs), max(xs) + 1)

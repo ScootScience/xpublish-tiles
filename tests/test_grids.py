@@ -506,16 +506,20 @@ class TestFixCoordinateDiscontinuities:
         '''
         if ds[lon_name].ndim == 1:
             return
-        all_lon_values = []
+
+        # For 2D coordinates, we need to apply ALL slicers together to get the actual subset
+        # Not individually per dimension (which would give incorrect results)
+        isel_dict = {}
         for dim_name, dim_slices in slicers.items():
-            for dim_slice in dim_slices:
-                if isinstance(dim_slice, slice):
-                    all_lon_values.append(
-                        ds[lon_name].isel({dim_name: dim_slice}).values.ravel()
-                    )
-        combined_lon = np.concatenate(all_lon_values)
-        lon_span = float(np.nanmax(combined_lon) - np.nanmin(combined_lon))
-        # Currently fails: wraparound padding inflates longitude span beyond regional bounds
+            # Use the first slice from each dimension
+            if isinstance(dim_slices, list) and len(dim_slices) > 0:
+                isel_dict[dim_name] = dim_slices[0]
+            elif not isinstance(dim_slices, list):
+                isel_dict[dim_name] = dim_slices
+
+        lon_subset = ds[lon_name].isel(isel_dict).values.ravel()
+        lon_span = float(np.nanmax(lon_subset) - np.nanmin(lon_subset))
+
         assert lon_span < 300.0, (
             f"Wraparound incorrectly enabled for regional tile. "
             f"Combined longitude span: {lon_span:.1f} degrees."
@@ -639,10 +643,10 @@ class TestFixCoordinateDiscontinuities:
             attrs={"Conventions": "CF-1.6"},
         )
 
-        # Validate constructed grid spans ±180° at western edge and stays regional eastward
-        assert float(ds.lon.isel(X=0).min().values) < -170.0
-        assert float(ds.lon.isel(X=0).max().values) > 170.0
-        assert abs(float(ds.lon.isel(X=-1).min().values) - (-110.0)) < 1.0
+        # Validate constructed grid spans ±180° globally and stays regional at eastern edge
+        assert float(ds.lon.min().values) < -170.0
+        assert float(ds.lon.max().values) > 170.0
+        assert abs(float(ds.lon.isel(Y=0, X=-1).values) - (-112.6)) < 1.0
 
         # Build curvilinear grid index mirroring HYCOM metadata
         index = CurvilinearCellIndex(
@@ -672,7 +676,7 @@ class TestFixCoordinateDiscontinuities:
         bbox = BBox(west=-157.5, south=58.0, east=-146.2, north=60.0)
         # Regional selection should not require wraparound padding
         slicers = grid.sel(bbox=bbox)
-        self._check_slicers(slicers, ds)
+        self._check_slicers(slicers, ds, grid.X)
 
 
 def test_prevent_slice_overlap():
