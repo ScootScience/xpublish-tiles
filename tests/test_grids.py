@@ -703,6 +703,22 @@ class TestFixCoordinateDiscontinuities:
             f"Expected single slice for Y dimension, got {len(slicers[grid.Ydim])} slices"
         )
 
+        # Verify the slice is efficient and covers the correct region
+        x_slice = slicers[grid.Xdim][0]
+        selected_ds = ds.isel({grid.Xdim: x_slice, grid.Ydim: slicers[grid.Ydim][0]})
+        lon_min = float(selected_ds.lon.min().values)
+        lon_max = float(selected_ds.lon.max().values)
+        lon_span = lon_max - lon_min
+
+        # Should cover approximately the requested bbox range, not the entire 360°
+        assert lon_span < 50.0, (
+            f"Selected longitude span ({lon_span:.1f}°) is too large. "
+            f"Expected efficient regional selection, not broad slice spanning discontinuity."
+        )
+        # Verify we're actually covering the bbox
+        assert lon_min <= bbox.west + 1.0, f"Selection doesn't cover bbox west edge"
+        assert lon_max >= bbox.east - 1.0, f"Selection doesn't cover bbox east edge"
+
 
 def test_prevent_slice_overlap():
     """Test _prevent_slice_overlap function with realistic array index scenarios."""

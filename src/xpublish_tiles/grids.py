@@ -96,6 +96,41 @@ Y_COORD_PATTERN = re.compile(
 _GRID_CACHE = cachetools.LRUCache(maxsize=config["grid_cache_max_size"])
 
 
+def _detect_discontinuity(coords: np.ndarray, axis: int) -> tuple[bool, int]:
+    """
+    Detect coordinate discontinuity (e.g., at antimeridian).
+
+    Parameters
+    ----------
+    coords : np.ndarray
+        Coordinate array (may be 1D or 2D)
+    axis : int
+        Axis along which to check for discontinuity
+
+    Returns
+    -------
+    tuple[bool, int]
+        (has_discontinuity, discontinuity_index)
+        discontinuity_index is -1 if no discontinuity found
+    """
+    if coords.size == 0:
+        return False, -1
+
+    coords_1d = np.take(coords, 0, axis=1 - axis) if coords.ndim == 2 and axis == 0 else (
+        np.take(coords, 0, axis=0) if coords.ndim == 2 else coords
+    )
+
+    if len(coords_1d) < 2:
+        return False, -1
+
+    diffs = np.diff(coords_1d)
+    large_gaps = np.where(np.abs(diffs) > 180)[0]
+
+    if len(large_gaps) > 0:
+        return True, int(large_gaps[0])
+    return False, -1
+
+
 def _grab_edges(
     left: np.ndarray,
     right: np.ndarray,
@@ -104,23 +139,92 @@ def _grab_edges(
     axis: int,
     size: int,
     increasing: bool,
+    coords: np.ndarray | None = None,
 ) -> list:
-    # bottom edge is inclusive; similar to IntervalIndex used in Rectilinear grids
+    """
+    Find indices of cells covering the given coordinate range.
+
+    Parameters
+    ----------
+    left : np.ndarray
+        Left/bottom edges of cells
+    right : np.ndarray
+        Right/top edges of cells
+    slicer : slice
+        Coordinate range to cover
+    axis : int
+        Axis along which to search (0 or 1)
+    size : int
+        Total size of dimension
+    increasing : bool
+        Whether coordinates are increasing
+    coords : np.ndarray, optional
+        Cell center coordinates for discontinuity detection
+
+    Returns
+    -------
+    list
+        Indices defining the selection range
+    """
     assert slicer.start <= slicer.stop
-    if increasing:
-        ys = [
-            np.append(np.nonzero(left <= slicer.stop)[axis], 0).max(),
-            np.append(np.nonzero(right > slicer.stop)[axis], size).min(),
-            np.append(np.nonzero(left <= slicer.start)[axis], 0).max(),
-            np.append(np.nonzero(right > slicer.start)[axis], size).min(),
-        ]
+
+    search_start, search_end = 0, size
+
+    if coords is not None:
+        has_disc, disc_idx = _detect_discontinuity(coords, axis)
+
+        if has_disc:
+            coords_1d = np.take(coords, 0, axis=1 - axis) if coords.ndim == 2 and axis == 0 else (
+                np.take(coords, 0, axis=0) if coords.ndim == 2 else coords
+            )
+            disc_value = coords_1d[disc_idx]
+            next_value = coords_1d[disc_idx + 1]
+
+            if disc_value > 0 and next_value < 0:
+                if slicer.start < 0 and slicer.stop < 0:
+                    search_start = disc_idx + 1
+                elif slicer.start >= 0 and slicer.stop > 0:
+                    search_end = disc_idx + 1
+
+    if search_start > 0 or search_end < size:
+        if axis == 0:
+            left_segment = left[search_start:search_end, ...]
+            right_segment = right[search_start:search_end, ...]
+        else:
+            left_segment = left[..., search_start:search_end]
+            right_segment = right[..., search_start:search_end]
+
+        segment_size = search_end - search_start
+
+        if increasing:
+            ys = [
+                np.append(np.nonzero(left_segment <= slicer.stop)[axis], 0).max() + search_start,
+                np.append(np.nonzero(right_segment > slicer.stop)[axis], segment_size).min() + search_start,
+                np.append(np.nonzero(left_segment <= slicer.start)[axis], 0).max() + search_start,
+                np.append(np.nonzero(right_segment > slicer.start)[axis], segment_size).min() + search_start,
+            ]
+        else:
+            ys = [
+                np.append(np.nonzero(left_segment < slicer.stop)[axis], segment_size).min() + search_start,
+                np.append(np.nonzero(right_segment >= slicer.stop)[axis], 0).max() + search_start,
+                np.append(np.nonzero(left_segment < slicer.start)[axis], segment_size).min() + search_start,
+                np.append(np.nonzero(right_segment >= slicer.start)[axis], 0).max() + search_start,
+            ]
     else:
-        ys = [
-            np.append(np.nonzero(left < slicer.stop)[axis], size).min(),
-            np.append(np.nonzero(right >= slicer.stop)[axis], 0).max(),
-            np.append(np.nonzero(left < slicer.start)[axis], size).min(),
-            np.append(np.nonzero(right >= slicer.start)[axis], 0).max(),
-        ]
+        if increasing:
+            ys = [
+                np.append(np.nonzero(left <= slicer.stop)[axis], 0).max(),
+                np.append(np.nonzero(right > slicer.stop)[axis], size).min(),
+                np.append(np.nonzero(left <= slicer.start)[axis], 0).max(),
+                np.append(np.nonzero(right > slicer.start)[axis], size).min(),
+            ]
+        else:
+            ys = [
+                np.append(np.nonzero(left < slicer.stop)[axis], size).min(),
+                np.append(np.nonzero(right >= slicer.stop)[axis], 0).max(),
+                np.append(np.nonzero(left < slicer.start)[axis], size).min(),
+                np.append(np.nonzero(right >= slicer.start)[axis], 0).max(),
+            ]
     return ys
 
 
@@ -461,11 +565,12 @@ class CurvilinearCellIndex(xr.Index):
             axis=yaxis,
             size=Ylen,
             increasing=self.y_is_increasing,
+            coords=Y,
         )
         all_indexers: list[slice] = []
         for sl in slices:
             xs = _grab_edges(
-                left, right, slicer=sl, axis=xaxis, size=Xlen, increasing=True
+                left, right, slicer=sl, axis=xaxis, size=Xlen, increasing=True, coords=X
             )
             # add 1 to account for slice upper end being exclusive
             indexer = slice(min(xs), max(xs) + 1)
