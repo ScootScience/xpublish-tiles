@@ -307,7 +307,7 @@ CURVILINEAR_TILES = [
 ]
 
 # Curvilinear HYCOM tiles - for testing curvilinear coordinate data
-CURVILINEAR_HYCOM_TILES = [
+REGIONAL_HYCOM_TILES = [
     pytest.param(
         (Tile(x=3, y=5, z=4), WEBMERC_TMS), id="curvilinear_hycom_east_z4(4/3/5)"
     ),

@@ -33,13 +33,13 @@ from xpublish_tiles.pipeline import (
 )
 from xpublish_tiles.testing.datasets import (
     CURVILINEAR,
-    CURVILINEAR_HYCOM,
     FORECAST,
     GLOBAL_6KM,
     GLOBAL_6KM_360,
     GLOBAL_NANS,
     HRRR,
     PARA,
+    REGIONAL_HYCOM,
 )
 from xpublish_tiles.testing.lib import (
     assert_render_matches_snapshot,
@@ -390,7 +390,7 @@ def test_apply_query_selectors():
     result = apply_query(curvilinear_ds, variables=["foo"], selectors={})
     assert_equal(result["foo"].da, curvilinear_ds.foo.sel(s_rho=0, method="nearest"))
 
-    curvilinear_hycom_ds = CURVILINEAR_HYCOM.create()
+    curvilinear_hycom_ds = REGIONAL_HYCOM.create()
     result = apply_query(curvilinear_hycom_ds, variables=["foo"], selectors={})
     assert_equal(result["foo"].da, curvilinear_hycom_ds.foo)
 
