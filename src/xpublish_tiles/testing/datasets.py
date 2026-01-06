@@ -1113,9 +1113,10 @@ def _create_curvilinear_grid_like_hycom(
             & (ds.latitude > 0)
             & (ds.latitude < 80)
         ).compute()
-        res = ds.where(mask, drop=True)
-        return res
+        ds.attrs["bbox"] = BBox(west=-180.0, south=0.0, east=-120.0, north=80.0)
+        return ds.where(mask, drop=True)
     else:
+        ds.attrs["bbox"] = BBox(west=-180.0, south=-80.0, east=180.0, north=90.0)
         return ds
 
 
