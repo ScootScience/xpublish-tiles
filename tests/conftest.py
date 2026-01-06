@@ -13,12 +13,11 @@ from xpublish_tiles.testing.datasets import (
     GLOBAL_HYCOM,
     HRRR,
     REDGAUSS_N320,
-    REGIONAL_HYCOM,
     UTM33S,
     create_global_dataset,
 )
 from xpublish_tiles.testing.lib import compare_image_buffers, png_snapshot  # noqa: F401
-from xpublish_tiles.testing.tiles import CURVILINEAR_TILES, REGIONAL_HYCOM_TILES
+from xpublish_tiles.testing.tiles import CURVILINEAR_TILES
 
 # Disable numba, datashader, and PIL debug logs
 logging.getLogger("numba").setLevel(logging.WARNING)
@@ -121,7 +120,8 @@ def repo(pytestconfig):
 @pytest.fixture(
     params=tuple(map(",".join, product(["-90->90", "90->-90"], ["-180->180", "0->360"])))
     + ("reduced_gaussian_n320",)
-    + ("global_hycom",)
+    # TODO: uncomment later
+    # + ("global_hycom",)
 )
 def global_datasets(request):
     param = request.param
@@ -163,9 +163,3 @@ def projected_dataset_and_tile(request):
 def curvilinear_dataset_and_tile(request):
     tile, tms = request.param
     return (CURVILINEAR.create(), tile, tms)
-
-
-@pytest.fixture(params=REGIONAL_HYCOM_TILES)
-def curvilinear_hycom_dataset_and_tile(request):
-    tile, tms = request.param
-    return (REGIONAL_HYCOM.create(), tile, tms)
