@@ -924,7 +924,6 @@ def subset_to_bbox(
             has_discontinuity = False
 
         if coarsen_factors:
-            # CURSOR: If this coarsen step is skipped, tests pass for the hycom grid. However, with this step running, tests fail.
             subset = coarsen(subset, coarsen_factors, grid=grid)
 
         with log_duration("transform_coordinates", "🔄"):
