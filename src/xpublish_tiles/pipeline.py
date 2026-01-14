@@ -425,25 +425,38 @@ def coarsen(
     with log_duration(f"coarsen {da.shape} by {coarsen_factors!r}", "🔲"):
         # a further complication: the padding for periodic longitude introduces
         # a discontinuity at the anti-meridian; which we end up averaging over below.
-        # So fix that here.
-        if grid.lon_spans_globe:
+        # So fix that here. However, for curvilinear grids (like HYCOM) where the antimeridian
+        # is in the middle of the coordinate array, we skip fixing here because:
+        # 1. The discontinuity will be properly fixed after transformation (in subset_to_bbox)
+        # 2. Using the full grid bbox here causes incorrect coordinate shifts for subsets
+        # 3. The coarsening operation works correctly on the original coordinates
+        if grid.lon_spans_globe and not isinstance(grid, Curvilinear):
             if grid.Xdim in coarsen_factors:
-                newX = fix_coordinate_discontinuities(
-                    da[grid.X].data,
-                    # FIXME: test 0->360 also!
-                    transformer_from_crs(grid.crs, grid.crs),
-                    axis=da[grid.X].get_axis_num(grid.Xdim),
-                    bbox=grid.bbox,
+                has_discontinuity_x = has_coordinate_discontinuity(
+                    da[grid.X].data, axis=da[grid.X].get_axis_num(grid.Xdim)
                 )
+                if has_discontinuity_x:
+                    newX = fix_coordinate_discontinuities(
+                        da[grid.X].data,
+                        # FIXME: test 0->360 also!
+                        transformer_from_crs(grid.crs, grid.crs),
+                        axis=da[grid.X].get_axis_num(grid.Xdim),
+                        bbox=grid.bbox,
+                    )
+                    da = da.assign_coords({grid.X: da[grid.X].copy(data=newX)})
             if grid.Ydim in coarsen_factors:
-                newX = fix_coordinate_discontinuities(
-                    da[grid.X].data,
-                    # FIXME: test 0->360 also!
-                    transformer_from_crs(grid.crs, grid.crs),
-                    axis=da[grid.X].get_axis_num(grid.Ydim),
-                    bbox=grid.bbox,
+                has_discontinuity_y = has_coordinate_discontinuity(
+                    da[grid.X].data, axis=da[grid.X].get_axis_num(grid.Ydim)
                 )
-            da = da.assign_coords({grid.X: da[grid.X].copy(data=newX)})
+                if has_discontinuity_y:
+                    newX = fix_coordinate_discontinuities(
+                        da[grid.X].data,
+                        # FIXME: test 0->360 also!
+                        transformer_from_crs(grid.crs, grid.crs),
+                        axis=da[grid.X].get_axis_num(grid.Ydim),
+                        bbox=grid.bbox,
+                    )
+                    da = da.assign_coords({grid.X: da[grid.X].copy(data=newX)})
         with NUMBA_THREADING_LOCK:
             coarsened = da.coarsen(coarsen_factors, boundary="pad").mean()  # type: ignore[unresolved-attribute]
     return coarsened
@@ -924,6 +937,7 @@ def subset_to_bbox(
             has_discontinuity = False
 
         if coarsen_factors:
+            # CURSOR: If this coarsen step is skipped, tests pass for the hycom grid. However, with this step running, tests fail.
             subset = coarsen(subset, coarsen_factors, grid=grid)
 
         with log_duration("transform_coordinates", "🔄"):
