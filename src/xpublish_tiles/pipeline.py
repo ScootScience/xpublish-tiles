@@ -430,7 +430,7 @@ def coarsen(
         # 1. The discontinuity will be properly fixed after transformation (in subset_to_bbox)
         # 2. Using the full grid bbox here causes incorrect coordinate shifts for subsets
         # 3. The coarsening operation works correctly on the original coordinates
-        if grid.lon_spans_globe and not isinstance(grid, Curvilinear):
+        if grid.lon_spans_globe:
             if grid.Xdim in coarsen_factors:
                 has_discontinuity_x = has_coordinate_discontinuity(
                     da[grid.X].data, axis=da[grid.X].get_axis_num(grid.Xdim)
